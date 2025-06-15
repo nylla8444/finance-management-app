@@ -7,18 +7,62 @@ export const DatabaseContext = createContext();
 
 export const DatabaseProvider = ({ children }) => {
     const [db, setDb] = useState(null);
+    const [dbInitialized, setDbInitialized] = useState(false);
     const [assets, setAssets] = useState([]);
     const [transactions, setTransactions] = useState([]);
     const [budgets, setBudgets] = useState([]);
     const [currency, setCurrency] = useState('PHP'); // Default currency
     const [isLoading, setIsLoading] = useState(true);
+    const [initRetries, setInitRetries] = useState(0);
+    const MAX_RETRIES = 3;
+
+    // Safely execute database operations with null checks and error handling
+    const safeDbOperation = async (operation, errorMessage) => {
+        if (!db) {
+            console.warn("Database not initialized yet");
+            return null;
+        }
+
+        try {
+            return await operation();
+        } catch (error) {
+            console.error(`${errorMessage}:`, error);
+
+            // Check if this is a connection error and the database was previously initialized
+            if (dbInitialized && error.message &&
+                (error.message.includes("NullPointerException") ||
+                    error.message.includes("not opened"))) {
+                console.log("Attempting to reconnect to database...");
+
+                // Attempt to reinitialize the database
+                try {
+                    const newDb = await SQLite.openDatabaseAsync('financialApp.db');
+                    setDb(newDb);
+                    console.log("Database reconnection successful");
+                    return null;
+                } catch (reconnectError) {
+                    console.error("Failed to reconnect to database:", reconnectError);
+                }
+            }
+
+            return null;
+        }
+    };
 
     useEffect(() => {
+        let isMounted = true;
+
         async function setupDatabase() {
             try {
                 console.log("Opening database...");
                 const database = await SQLite.openDatabaseAsync('financialApp.db');
+
+                if (!isMounted) return;
+
                 setDb(database);
+
+                // Run database operations sequentially to avoid race conditions
+                await database.execAsync('PRAGMA journal_mode = WAL;'); // Enable Write-Ahead Logging for better concurrency
 
                 // Initialize database tables one by one
                 console.log("Creating assets table...");
@@ -36,24 +80,56 @@ export const DatabaseProvider = ({ children }) => {
                     'CREATE TABLE IF NOT EXISTS budgets (id INTEGER PRIMARY KEY AUTOINCREMENT, category TEXT, amount REAL, period TEXT, spent REAL);'
                 );
 
-                // Load initial data
+                if (!isMounted) return;
+
+                setDbInitialized(true);
+                setInitRetries(0);
+
+                // Load initial data sequentially
                 console.log("Loading initial data...");
                 await loadAssets(database);
                 await loadTransactions(database);
                 await loadBudgets(database);
+
             } catch (error) {
                 console.error('Database setup error:', error);
+
+                if (!isMounted) return;
+
                 setIsLoading(false);
+
+                // Retry initialization if it fails with specific errors
+                if (initRetries < MAX_RETRIES &&
+                    error.message &&
+                    (error.message.includes("NullPointerException") ||
+                        error.message.includes("not opened"))) {
+                    console.log(`Retrying database setup (attempt ${initRetries + 1}/${MAX_RETRIES})...`);
+                    setInitRetries(prev => prev + 1);
+
+                    // Wait a moment before retrying
+                    setTimeout(setupDatabase, 1000);
+                }
             }
         }
 
         setupDatabase();
-    }, []);
+
+        // Cleanup function
+        return () => {
+            isMounted = false;
+        };
+    }, [initRetries]); // Only depend on initRetries so we can control retries
 
     // Load assets from database
     const loadAssets = async (database) => {
         try {
-            const result = await database.getAllAsync('SELECT * FROM assets');
+            const db = database || this.db;
+            if (!db) {
+                console.warn("Cannot load assets: database not initialized");
+                return;
+            }
+
+            const result = await db.getAllAsync('SELECT * FROM assets');
             // Sort by amount before setting state
             setAssets(sortAssetsByAmount(result));
             setIsLoading(false);
@@ -66,7 +142,13 @@ export const DatabaseProvider = ({ children }) => {
     // Load transactions from database
     const loadTransactions = async (database) => {
         try {
-            const result = await database.getAllAsync('SELECT * FROM transactions ORDER BY date DESC');
+            const db = database || this.db;
+            if (!db) {
+                console.warn("Cannot load transactions: database not initialized");
+                return;
+            }
+
+            const result = await db.getAllAsync('SELECT * FROM transactions ORDER BY date DESC');
             setTransactions(result);
         } catch (error) {
             console.error('Error loading transactions', error);
@@ -76,7 +158,13 @@ export const DatabaseProvider = ({ children }) => {
     // Load budgets from database
     const loadBudgets = async (database) => {
         try {
-            const result = await database.getAllAsync('SELECT * FROM budgets');
+            const db = database || this.db;
+            if (!db) {
+                console.warn("Cannot load budgets: database not initialized");
+                return;
+            }
+
+            const result = await db.getAllAsync('SELECT * FROM budgets');
             setBudgets(result);
         } catch (error) {
             console.error('Error loading budgets', error);
@@ -85,23 +173,21 @@ export const DatabaseProvider = ({ children }) => {
 
     // Add a new asset
     const addAsset = async (asset) => {
-        try {
+        return safeDbOperation(async () => {
             const result = await db.runAsync(
                 'INSERT INTO assets (name, amount, currency, image) VALUES (?, ?, ?, ?)',
-
                 [asset.name, asset.amount, asset.currency, asset.image]
             );
             const newAsset = { ...asset, id: result.lastInsertRowId };
             // Sort assets after adding a new one
             setAssets(sortAssetsByAmount([...assets, newAsset]));
-        } catch (error) {
-            console.error('Error adding asset', error);
-        }
+            return newAsset;
+        }, 'Error adding asset');
     };
 
     // Update an asset
     const updateAsset = async (asset) => {
-        try {
+        return safeDbOperation(async () => {
             await db.runAsync(
                 'UPDATE assets SET name = ?, amount = ?, currency = ?, image = ? WHERE id = ?',
                 [asset.name, asset.amount, asset.currency, asset.image, asset.id]
@@ -109,21 +195,19 @@ export const DatabaseProvider = ({ children }) => {
             // Sort assets after updating
             const updatedAssets = assets.map(a => a.id === asset.id ? asset : a);
             setAssets(sortAssetsByAmount(updatedAssets));
-        } catch (error) {
-            console.error('Error updating asset', error);
-        }
+            return asset;
+        }, 'Error updating asset');
     };
 
     // Delete an asset
     const deleteAsset = async (id) => {
-        try {
+        return safeDbOperation(async () => {
             await db.runAsync('DELETE FROM assets WHERE id = ?', [id]);
             // No need to sort after deletion, but maintaining consistency
             const filteredAssets = assets.filter(a => a.id !== id);
             setAssets(sortAssetsByAmount(filteredAssets));
-        } catch (error) {
-            console.error('Error deleting asset', error);
-        }
+            return id;
+        }, 'Error deleting asset');
     };
 
     // Calculate total assets
@@ -133,56 +217,66 @@ export const DatabaseProvider = ({ children }) => {
 
     // Add a new transaction
     const addTransaction = async (transaction) => {
-        try {
-            const result = await db.runAsync(
-                'INSERT INTO transactions (type, amount, category, description, location, date) VALUES (?, ?, ?, ?, ?, ?)',
-                [
-                    transaction.type,
-                    transaction.amount,
-                    transaction.category,
-                    transaction.description,
-                    transaction.location,
-                    transaction.date
-                ]
-            );
+        return safeDbOperation(async () => {
+            // Use a transaction to ensure all operations succeed or fail together
+            await db.withTransactionAsync(async () => {
+                const result = await db.runAsync(
+                    'INSERT INTO transactions (type, amount, category, description, location, date) VALUES (?, ?, ?, ?, ?, ?)',
+                    [
+                        transaction.type,
+                        transaction.amount,
+                        transaction.category,
+                        transaction.description,
+                        transaction.location,
+                        transaction.date
+                    ]
+                );
 
-            // Update asset amount based on the transaction
-            const asset = assets.find(a => a.name === transaction.location);
-            if (asset) {
-                let newAmount = parseFloat(asset.amount);
-                if (transaction.type === 'income') {
-                    newAmount += parseFloat(transaction.amount);
-                } else {
-                    newAmount -= parseFloat(transaction.amount);
+                // Update asset amount based on the transaction
+                const asset = assets.find(a => a.name === transaction.location);
+                if (asset) {
+                    let newAmount = parseFloat(asset.amount);
+                    if (transaction.type === 'income') {
+                        newAmount += parseFloat(transaction.amount);
+                    } else {
+                        newAmount -= parseFloat(transaction.amount);
+                    }
+
+                    await db.runAsync(
+                        'UPDATE assets SET amount = ? WHERE id = ?',
+                        [newAmount, asset.id]
+                    );
+
+                    // Update assets state
+                    const updatedAsset = { ...asset, amount: newAmount };
+                    const updatedAssets = assets.map(a => a.id === asset.id ? updatedAsset : a);
+                    setAssets(sortAssetsByAmount(updatedAssets));
                 }
 
-                await updateAsset({
-                    ...asset,
-                    amount: newAmount
-                });
-            }
+                // If it's an expense, update the corresponding budget
+                if (transaction.type === 'expense') {
+                    // Find budgets that match this category
+                    const matchingBudgets = budgets.filter(b => b.category === transaction.category);
 
-            // If it's an expense, update the corresponding budget
-            if (transaction.type === 'expense') {
-                // Find budgets that match this category
-                const matchingBudgets = budgets.filter(b => b.category === transaction.category);
+                    // Update each matching budget
+                    for (const budget of matchingBudgets) {
+                        const spent = parseFloat(budget.spent || 0) + parseFloat(transaction.amount);
+                        await db.runAsync(
+                            'UPDATE budgets SET spent = ? WHERE id = ?',
+                            [spent, budget.id]
+                        );
 
-                // Update each matching budget
-                for (const budget of matchingBudgets) {
-                    const spent = parseFloat(budget.spent || 0) + parseFloat(transaction.amount);
-                    await updateBudget({
-                        ...budget,
-                        spent
-                    });
+                        // Update budgets state
+                        const updatedBudget = { ...budget, spent };
+                        setBudgets(budgets.map(b => b.id === budget.id ? updatedBudget : b));
+                    }
                 }
-            }
 
-            const newTransaction = { ...transaction, id: result.lastInsertRowId };
-            setTransactions([newTransaction, ...transactions]);
-
-        } catch (error) {
-            console.error('Error adding transaction', error);
-        }
+                const newTransaction = { ...transaction, id: result.lastInsertRowId };
+                setTransactions([newTransaction, ...transactions]);
+                return newTransaction;
+            });
+        }, 'Error adding transaction');
     };
 
     // Update a transaction
@@ -475,6 +569,7 @@ export const DatabaseProvider = ({ children }) => {
                 changeCurrency,
                 getCurrency,
                 isLoading,
+                dbInitialized,
                 addAsset,
                 updateAsset,
                 deleteAsset,
@@ -494,7 +589,7 @@ export const DatabaseProvider = ({ children }) => {
                 loadBudgets: () => db && loadBudgets(db),
                 db,
                 updateTransaction,
-                sortedAssets: sortAssetsByAmount(assets), // Add this new property
+                sortedAssets: sortAssetsByAmount(assets),
             }}
         >
             {children}
