@@ -4,6 +4,7 @@ import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { View, Text } from 'react-native'; // Add this import for the ErrorBoundary
 
 // Import screens
 import HomeScreen from './screens/HomeScreen';

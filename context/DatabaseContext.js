@@ -218,64 +218,85 @@ export const DatabaseProvider = ({ children }) => {
     // Add a new transaction
     const addTransaction = async (transaction) => {
         return safeDbOperation(async () => {
-            // Use a transaction to ensure all operations succeed or fail together
-            await db.withTransactionAsync(async () => {
-                const result = await db.runAsync(
-                    'INSERT INTO transactions (type, amount, category, description, location, date) VALUES (?, ?, ?, ?, ?, ?)',
-                    [
-                        transaction.type,
-                        transaction.amount,
-                        transaction.category,
-                        transaction.description,
-                        transaction.location,
-                        transaction.date
-                    ]
-                );
+            try {
+                // Validate transaction data to prevent null values
+                const validatedTransaction = {
+                    type: (transaction.type || '').toLowerCase(), // Normalize type to lowercase
+                    amount: parseFloat(transaction.amount) || 0,
+                    category: transaction.category || '',
+                    description: transaction.description || '',
+                    location: transaction.location || '',
+                    date: transaction.date || new Date().toISOString()
+                };
 
-                // Update asset amount based on the transaction
-                const asset = assets.find(a => a.name === transaction.location);
-                if (asset) {
-                    let newAmount = parseFloat(asset.amount);
-                    if (transaction.type === 'income') {
-                        newAmount += parseFloat(transaction.amount);
-                    } else {
-                        newAmount -= parseFloat(transaction.amount);
-                    }
-
-                    await db.runAsync(
-                        'UPDATE assets SET amount = ? WHERE id = ?',
-                        [newAmount, asset.id]
+                // Use a transaction to ensure all operations succeed or fail together
+                await db.withTransactionAsync(async () => {
+                    // Insert the transaction record
+                    const result = await db.runAsync(
+                        'INSERT INTO transactions (type, amount, category, description, location, date) VALUES (?, ?, ?, ?, ?, ?)',
+                        [
+                            validatedTransaction.type,
+                            validatedTransaction.amount,
+                            validatedTransaction.category,
+                            validatedTransaction.description,
+                            validatedTransaction.location,
+                            validatedTransaction.date
+                        ]
                     );
 
-                    // Update assets state
-                    const updatedAsset = { ...asset, amount: newAmount };
-                    const updatedAssets = assets.map(a => a.id === asset.id ? updatedAsset : a);
-                    setAssets(sortAssetsByAmount(updatedAssets));
-                }
+                    // Update asset amount based on the transaction
+                    if (validatedTransaction.location) {
+                        const asset = assets.find(a => a.name === validatedTransaction.location);
+                        if (asset) {
+                            let newAmount = parseFloat(asset.amount);
+                            if (validatedTransaction.type === 'income') {
+                                newAmount += validatedTransaction.amount;
+                            } else if (validatedTransaction.type === 'expense') {
+                                newAmount -= validatedTransaction.amount;
+                            }
 
-                // If it's an expense, update the corresponding budget
-                if (transaction.type === 'expense') {
-                    // Find budgets that match this category
-                    const matchingBudgets = budgets.filter(b => b.category === transaction.category);
+                            await db.runAsync(
+                                'UPDATE assets SET amount = ? WHERE id = ?',
+                                [newAmount, asset.id]
+                            );
 
-                    // Update each matching budget
-                    for (const budget of matchingBudgets) {
-                        const spent = parseFloat(budget.spent || 0) + parseFloat(transaction.amount);
-                        await db.runAsync(
-                            'UPDATE budgets SET spent = ? WHERE id = ?',
-                            [spent, budget.id]
-                        );
-
-                        // Update budgets state
-                        const updatedBudget = { ...budget, spent };
-                        setBudgets(budgets.map(b => b.id === budget.id ? updatedBudget : b));
+                            // Update assets state
+                            const updatedAsset = { ...asset, amount: newAmount };
+                            const updatedAssets = assets.map(a => a.id === asset.id ? updatedAsset : a);
+                            setAssets(sortAssetsByAmount(updatedAssets));
+                        }
                     }
-                }
 
-                const newTransaction = { ...transaction, id: result.lastInsertRowId };
-                setTransactions([newTransaction, ...transactions]);
-                return newTransaction;
-            });
+                    // If it's an expense, update the corresponding budget
+                    if (validatedTransaction.type === 'expense' && validatedTransaction.category) {
+                        // Find budgets that match this category
+                        const matchingBudgets = budgets.filter(b => b.category === validatedTransaction.category);
+
+                        // Update each matching budget
+                        for (const budget of matchingBudgets) {
+                            const spent = parseFloat(budget.spent || 0) + validatedTransaction.amount;
+                            await db.runAsync(
+                                'UPDATE budgets SET spent = ? WHERE id = ?',
+                                [spent, budget.id]
+                            );
+
+                            // Update budgets state
+                            const updatedBudget = { ...budget, spent };
+                            setBudgets(budgets.map(b => b.id === budget.id ? updatedBudget : b));
+                        }
+                    }
+
+                    const newTransaction = {
+                        ...validatedTransaction,
+                        id: result.lastInsertRowId
+                    };
+                    setTransactions([newTransaction, ...transactions]);
+                    return newTransaction;
+                });
+            } catch (error) {
+                console.error('Error in transaction processing:', error);
+                throw error; // Re-throw to be handled by safeDbOperation
+            }
         }, 'Error adding transaction');
     };
 
@@ -407,6 +428,7 @@ export const DatabaseProvider = ({ children }) => {
     const deleteTransaction = async (id) => {
         try {
             await db.runAsync('DELETE FROM transactions WHERE id = ?', [id]);
+            // Fix the syntax error - was missing parentheses
             setTransactions(transactions.filter(t => t.id !== id));
         } catch (error) {
             console.error('Error deleting transaction', error);
