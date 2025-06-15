@@ -14,6 +14,8 @@ export const DatabaseProvider = ({ children }) => {
     const [currency, setCurrency] = useState('PHP'); // Default currency
     const [isLoading, setIsLoading] = useState(true);
     const [initRetries, setInitRetries] = useState(0);
+    const [deletedTransactions, setDeletedTransactions] = useState([]); // Track deleted transactions
+    const [recentlyDeleted, setRecentlyDeleted] = useState([]); // Track recently deleted transactions
     const MAX_RETRIES = 3;
 
     // Safely execute database operations with null checks and error handling
@@ -78,6 +80,12 @@ export const DatabaseProvider = ({ children }) => {
                 console.log("Creating budgets table...");
                 await database.execAsync(
                     'CREATE TABLE IF NOT EXISTS budgets (id INTEGER PRIMARY KEY AUTOINCREMENT, category TEXT, amount REAL, period TEXT, spent REAL);'
+                );
+
+                // Add transaction history table for audit trail
+                console.log("Creating transaction history table...");
+                await database.execAsync(
+                    'CREATE TABLE IF NOT EXISTS transaction_history (id INTEGER PRIMARY KEY AUTOINCREMENT, transaction_id INTEGER, action TEXT, timestamp TEXT, data TEXT);'
                 );
 
                 if (!isMounted) return;
@@ -427,11 +435,133 @@ export const DatabaseProvider = ({ children }) => {
     // Delete a transaction
     const deleteTransaction = async (id) => {
         try {
-            await db.runAsync('DELETE FROM transactions WHERE id = ?', [id]);
-            // Fix the syntax error - was missing parentheses
+            // Find the transaction to be deleted
+            const transactionToDelete = transactions.find(t => t.id === id);
+
+            if (!transactionToDelete) {
+                console.error('Transaction not found:', id);
+                return false;
+            }
+
+            // Save transaction data for audit trail and undo functionality
+            const timestamp = new Date().toISOString();
+            const historyData = JSON.stringify(transactionToDelete);
+
+            await db.withTransactionAsync(async () => {
+                // Reverse the effect on the associated asset
+                if (transactionToDelete.location) {
+                    const asset = assets.find(a => a.name === transactionToDelete.location);
+                    if (asset) {
+                        let newAmount = parseFloat(asset.amount);
+
+                        // Reverse the original transaction effect
+                        if (transactionToDelete.type === 'income') {
+                            newAmount -= parseFloat(transactionToDelete.amount);
+                        } else if (transactionToDelete.type === 'expense') {
+                            newAmount += parseFloat(transactionToDelete.amount);
+                        }
+
+                        // Update the asset in the database
+                        await db.runAsync(
+                            'UPDATE assets SET amount = ? WHERE id = ?',
+                            [newAmount, asset.id]
+                        );
+
+                        // Update assets state
+                        const updatedAsset = { ...asset, amount: newAmount };
+                        const updatedAssets = assets.map(a => a.id === asset.id ? updatedAsset : a);
+                        setAssets(sortAssetsByAmount(updatedAssets));
+                    }
+                }
+
+                // If it was an expense, update the corresponding budget
+                if (transactionToDelete.type === 'expense' && transactionToDelete.category) {
+                    const matchingBudgets = budgets.filter(b => b.category === transactionToDelete.category);
+
+                    for (const budget of matchingBudgets) {
+                        // Decrease the spent amount
+                        const spent = Math.max(0, parseFloat(budget.spent || 0) - parseFloat(transactionToDelete.amount));
+                        await db.runAsync(
+                            'UPDATE budgets SET spent = ? WHERE id = ?',
+                            [spent, budget.id]
+                        );
+
+                        // Update budgets state
+                        const updatedBudget = { ...budget, spent };
+                        setBudgets(budgets.map(b => b.id === budget.id ? updatedBudget : b));
+                    }
+                }
+
+                // Add to transaction history for audit trail
+                await db.runAsync(
+                    'INSERT INTO transaction_history (transaction_id, action, timestamp, data) VALUES (?, ?, ?, ?)',
+                    [id, 'delete', timestamp, historyData]
+                );
+
+                // Delete the transaction from the database
+                await db.runAsync('DELETE FROM transactions WHERE id = ?', [id]);
+            });
+
+            // Update state
             setTransactions(transactions.filter(t => t.id !== id));
+
+            // Add transaction to recently deleted for undo functionality
+            addToRecentlyDeleted(transactionToDelete);
+
+            return true;
         } catch (error) {
             console.error('Error deleting transaction', error);
+            return false;
+        }
+    };
+
+    // Store recently deleted transactions for undo functionality
+    const addToRecentlyDeleted = (transaction) => {
+        // Keep only the most recent 5 deleted transactions
+        const updatedRecent = [transaction, ...recentlyDeleted.slice(0, 4)];
+        setRecentlyDeleted(updatedRecent);
+    };
+
+    // Undo a deleted transaction
+    const undoDeleteTransaction = async (transaction) => {
+        try {
+            // Re-add the transaction
+            await addTransaction(transaction);
+
+            // Remove from recently deleted
+            setRecentlyDeleted(recentlyDeleted.filter(t => t.id !== transaction.id));
+
+            // Add to history
+            const timestamp = new Date().toISOString();
+            const historyData = JSON.stringify(transaction);
+
+            await db.runAsync(
+                'INSERT INTO transaction_history (transaction_id, action, timestamp, data) VALUES (?, ?, ?, ?)',
+                [transaction.id, 'restore', timestamp, historyData]
+            );
+
+            return true;
+        } catch (error) {
+            console.error('Error restoring transaction', error);
+            return false;
+        }
+    };
+
+    // Get transaction history for audit trail
+    const getTransactionHistory = async () => {
+        try {
+            const result = await db.getAllAsync(
+                'SELECT * FROM transaction_history ORDER BY timestamp DESC'
+            );
+
+            // Parse the data field from JSON
+            return result.map(item => ({
+                ...item,
+                data: JSON.parse(item.data)
+            }));
+        } catch (error) {
+            console.error('Error getting transaction history', error);
+            return [];
         }
     };
 
@@ -612,6 +742,9 @@ export const DatabaseProvider = ({ children }) => {
                 db,
                 updateTransaction,
                 sortedAssets: sortAssetsByAmount(assets),
+                undoDeleteTransaction,
+                recentlyDeleted,
+                getTransactionHistory,
             }}
         >
             {children}
