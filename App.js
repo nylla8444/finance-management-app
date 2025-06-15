@@ -4,6 +4,7 @@ import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { View, Text } from 'react-native'; // Add this import for the ErrorBoundary
 
 // Import screens
 import HomeScreen from './screens/HomeScreen';
@@ -100,10 +101,49 @@ export default function App() {
   return (
     <SafeAreaProvider>
       <PreferencesProvider>
-        <DatabaseProvider>
-          <AppNavigator />
-        </DatabaseProvider>
+        <ErrorBoundary>
+          <DatabaseProvider>
+            <AppNavigator />
+          </DatabaseProvider>
+        </ErrorBoundary>
       </PreferencesProvider>
     </SafeAreaProvider>
   );
+}
+
+// Add an Error Boundary component to catch and handle errors gracefully
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error, errorInfo) {
+    console.error("Error caught by boundary:", error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      // You can render a fallback UI here
+      return (
+        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 20 }}>
+          <Text style={{ fontSize: 18, fontWeight: 'bold', marginBottom: 10 }}>
+            Something went wrong
+          </Text>
+          <Text style={{ textAlign: 'center', marginBottom: 20 }}>
+            The app encountered an error. Please restart the app.
+          </Text>
+          <Text style={{ fontSize: 12, color: '#666', textAlign: 'center' }}>
+            {this.state.error?.toString()}
+          </Text>
+        </View>
+      );
+    }
+
+    return this.props.children;
+  }
 }

@@ -7,7 +7,8 @@ import {
     TextInput,
     TouchableOpacity,
     ScrollView,
-    Platform
+    Platform,
+    Alert
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
@@ -52,37 +53,41 @@ export default function TransactionForm({ visible, onClose, onSave, transaction,
         }
     }, [transaction, visible]);
 
+    // Add a useEffect to reset category when type changes
+    useEffect(() => {
+        setCategory(''); // Reset category when type changes
+    }, [type]);
+
     const handleSave = () => {
         // Validate form inputs
         if (!amount || isNaN(parseFloat(amount)) || parseFloat(amount) <= 0) {
-            alert('Please enter a valid amount');
+            Alert.alert('Error', 'Please enter a valid amount greater than zero');
             return;
         }
 
-        if (!category) {
-            alert('Please select a category');
+        if (type === 'expense' && !category) {
+            Alert.alert('Error', 'Please select a category for expense');
+            return;
+        } else if (type === 'income' && !category) {
+            Alert.alert('Error', 'Please select a category for income');
             return;
         }
 
         if (!location) {
-            alert('Please select a location');
+            Alert.alert('Error', 'Please select a location/asset');
             return;
         }
 
         // Prepare transaction data
         const transactionData = {
-            type,
+            type: type.toLowerCase(), // Normalize type to lowercase
             amount: parseFloat(amount),
             category,
-            description,
+            description: description || '',
             location,
-            date: date.toISOString()
+            date: date.toISOString(),
+            ...(transaction && transaction.id ? { id: transaction.id } : {})
         };
-
-        // Include ID if editing
-        if (transaction?.id) {
-            transactionData.id = transaction.id;
-        }
 
         // Save and close
         onSave(transactionData);
@@ -290,7 +295,9 @@ export default function TransactionForm({ visible, onClose, onSave, transaction,
                 <View style={styles.pickerModalOverlay}>
                     <View style={[styles.pickerModalContent, { backgroundColor }]}>
                         <View style={styles.pickerHeader}>
-                            <Text style={[styles.pickerTitle, { color: textColor }]}>Select Category</Text>
+                            <Text style={[styles.pickerTitle, { color: textColor }]}>
+                                Select {type.charAt(0).toUpperCase() + type.slice(1)} Category
+                            </Text>
                             <TouchableOpacity onPress={() => setShowCategoryPicker(false)}>
                                 <Ionicons name="close" size={24} color={textColor} />
                             </TouchableOpacity>
