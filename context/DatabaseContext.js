@@ -1,6 +1,7 @@
 import React, { createContext, useState, useEffect } from 'react';
 import * as SQLite from 'expo-sqlite';
 import { getCurrencySymbol } from '../utils/currencyUtils';
+import { sortAssetsByAmount } from '../utils/sortUtils';
 
 export const DatabaseContext = createContext();
 
@@ -53,7 +54,8 @@ export const DatabaseProvider = ({ children }) => {
     const loadAssets = async (database) => {
         try {
             const result = await database.getAllAsync('SELECT * FROM assets');
-            setAssets(result);
+            // Sort by amount before setting state
+            setAssets(sortAssetsByAmount(result));
             setIsLoading(false);
         } catch (error) {
             console.error('Error loading assets', error);
@@ -90,7 +92,8 @@ export const DatabaseProvider = ({ children }) => {
                 [asset.name, asset.amount, asset.currency, asset.image]
             );
             const newAsset = { ...asset, id: result.lastInsertRowId };
-            setAssets([...assets, newAsset]);
+            // Sort assets after adding a new one
+            setAssets(sortAssetsByAmount([...assets, newAsset]));
         } catch (error) {
             console.error('Error adding asset', error);
         }
@@ -103,7 +106,9 @@ export const DatabaseProvider = ({ children }) => {
                 'UPDATE assets SET name = ?, amount = ?, currency = ?, image = ? WHERE id = ?',
                 [asset.name, asset.amount, asset.currency, asset.image, asset.id]
             );
-            setAssets(assets.map(a => a.id === asset.id ? asset : a));
+            // Sort assets after updating
+            const updatedAssets = assets.map(a => a.id === asset.id ? asset : a);
+            setAssets(sortAssetsByAmount(updatedAssets));
         } catch (error) {
             console.error('Error updating asset', error);
         }
@@ -113,7 +118,9 @@ export const DatabaseProvider = ({ children }) => {
     const deleteAsset = async (id) => {
         try {
             await db.runAsync('DELETE FROM assets WHERE id = ?', [id]);
-            setAssets(assets.filter(a => a.id !== id));
+            // No need to sort after deletion, but maintaining consistency
+            const filteredAssets = assets.filter(a => a.id !== id);
+            setAssets(sortAssetsByAmount(filteredAssets));
         } catch (error) {
             console.error('Error deleting asset', error);
         }
@@ -487,6 +494,7 @@ export const DatabaseProvider = ({ children }) => {
                 loadBudgets: () => db && loadBudgets(db),
                 db,
                 updateTransaction,
+                sortedAssets: sortAssetsByAmount(assets), // Add this new property
             }}
         >
             {children}

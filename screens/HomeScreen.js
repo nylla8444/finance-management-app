@@ -20,6 +20,7 @@ import * as ImagePicker from 'expo-image-picker';
 
 // Import the new AssetForm component
 import AssetForm from '../components/AssetForm';
+import { sortAssetsByAmount } from '../utils/sortUtils';
 
 export default function HomeScreen() {
     const { assets, addAsset, updateAsset, deleteAsset, getTotalAssets, isLoading, loadAssets } = useContext(DatabaseContext);
@@ -150,6 +151,9 @@ export default function HomeScreen() {
         return chartData;
     };
 
+    // Sort assets by amount (highest to lowest)
+    const sortedAssets = sortAssetsByAmount(assets);
+
     // Render asset item
     const renderAssetItem = ({ item }) => (
         <TouchableOpacity
@@ -207,7 +211,7 @@ export default function HomeScreen() {
                 <View style={styles.loadingContainer}>
                     <Text style={[styles.loadingText, { color: theme.text }]}>Loading assets...</Text>
                 </View>
-            ) : assets.length === 0 ? (
+            ) : sortedAssets.length === 0 ? (
                 <View style={styles.emptyContainer}>
                     <Ionicons name="wallet-outline" size={64} color={theme.border} />
                     <Text style={[styles.emptyText, { color: theme.text }]}>No assets yet</Text>
@@ -217,7 +221,7 @@ export default function HomeScreen() {
                 </View>
             ) : (
                 <FlatList
-                    data={assets}
+                    data={sortedAssets}
                     renderItem={renderAssetItem}
                     keyExtractor={item => item.id.toString()}
                     contentContainerStyle={styles.list}
@@ -257,7 +261,7 @@ export default function HomeScreen() {
                             contentContainerStyle={styles.chartContentContainer}
                             showsVerticalScrollIndicator={true}
                         >
-                            {assets.length === 0 ? (
+                            {sortedAssets.length === 0 ? (
                                 <View style={styles.emptyChart}>
                                     <Text style={[styles.emptyText, { color: theme.text }]}>
                                         No assets to display
@@ -301,12 +305,12 @@ export default function HomeScreen() {
                                         </View>
                                     )}
 
-                                    {/* Asset breakdown list */}
+                                    {/* Asset breakdown list - use sortedAssets here too */}
                                     <View style={[styles.distributionList, { borderTopColor: theme.border, borderTopWidth: 1 }]}>
                                         <Text style={[styles.distributionTitle, { color: theme.text }]}>
                                             Asset Breakdown
                                         </Text>
-                                        {assets.map((asset, index) => {
+                                        {sortedAssets.map((asset, index) => {
                                             const chartData = getChartData();
                                             const color = index < chartData.length ? chartData[index]?.color : '#CCCCCC';
                                             const percentage = getTotalAssets() > 0
