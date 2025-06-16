@@ -20,14 +20,27 @@ import TransactionForm from '../components/TransactionForm';
 const PERIODS = ['Week', 'Month', 'Year'];
 
 export default function TransactionsScreen() {
-    const { transactions, assets, addTransaction, updateTransaction, deleteTransaction, loadTransactions } = useContext(DatabaseContext);
-    const { theme } = useContext(PreferencesContext);
+    const {
+        transactions,
+        assets,
+        addTransaction,
+        updateTransaction,
+        deleteTransaction,
+        loadTransactions,
+        recentlyDeleted,
+        undoDeleteTransaction
+    } = useContext(DatabaseContext);
+    const { theme, currency } = useContext(PreferencesContext);
 
     const [filter, setFilter] = useState('all'); // 'all', 'income', 'expense'
     const [period, setPeriod] = useState('Month');
     const [showAddModal, setShowAddModal] = useState(false);
     const [showPeriodModal, setShowPeriodModal] = useState(false);
     const [editingTransaction, setEditingTransaction] = useState(null);
+
+    // Add state for undo snackbar
+    const [showUndoSnackbar, setShowUndoSnackbar] = useState(false);
+    const [deletedTransaction, setDeletedTransaction] = useState(null);
 
     // Load transactions when screen is focused
     useEffect(() => {
@@ -115,18 +128,57 @@ export default function TransactionsScreen() {
 
     // Confirm transaction deletion
     const confirmDeleteTransaction = (id) => {
+        const transaction = transactions.find(t => t.id === id);
+        if (!transaction) return;
+
+        const assetName = transaction.location;
+        const transactionAmount = parseFloat(transaction.amount);
+        const formattedAmount = `${currency} ${transactionAmount.toFixed(2)}`;
+
+        let message = `Are you sure you want to delete this transaction?`;
+
+        if (assetName) {
+            if (transaction.type === 'income') {
+                message += `\n\nThis will decrease ${assetName} by ${formattedAmount}.`;
+            } else {
+                message += `\n\nThis will increase ${assetName} by ${formattedAmount}.`;
+            }
+        }
+
         Alert.alert(
             "Delete Transaction",
-            "Are you sure you want to delete this transaction?",
+            message,
             [
                 { text: "Cancel", style: "cancel" },
                 {
                     text: "Delete",
                     style: "destructive",
-                    onPress: () => deleteTransaction(id)
+                    onPress: async () => {
+                        const success = await deleteTransaction(id);
+                        if (success) {
+                            // Save for undo and show snackbar
+                            setDeletedTransaction(transaction);
+                            setShowUndoSnackbar(true);
+
+                            // Auto-hide undo snackbar after 5 seconds
+                            setTimeout(() => {
+                                setShowUndoSnackbar(false);
+                                setDeletedTransaction(null);
+                            }, 5000);
+                        }
+                    }
                 }
             ]
         );
+    };
+
+    // Handle undo action
+    const handleUndo = async () => {
+        if (deletedTransaction) {
+            await undoDeleteTransaction(deletedTransaction);
+            setShowUndoSnackbar(false);
+            setDeletedTransaction(null);
+        }
     };
 
     // Group transactions by date
@@ -310,6 +362,18 @@ export default function TransactionsScreen() {
                     </View>
                 </TouchableOpacity>
             </Modal>
+
+            {/* Undo Snackbar */}
+            {showUndoSnackbar && (
+                <View style={[styles.undoSnackbar, { backgroundColor: theme.card }]}>
+                    <Text style={[styles.undoSnackbarText, { color: theme.text }]}>
+                        Transaction deleted
+                    </Text>
+                    <TouchableOpacity onPress={handleUndo}>
+                        <Text style={[styles.undoButton, { color: theme.primary }]}>UNDO</Text>
+                    </TouchableOpacity>
+                </View>
+            )}
         </SafeAreaView>
     );
 }
@@ -417,4 +481,31 @@ const styles = StyleSheet.create({
         borderBottomWidth: 1,
         borderBottomColor: '#ccc',
     },
+    undoSnackbar: {
+        position: 'absolute',
+        bottom: 70,
+        left: 20,
+        right: 20,
+        borderRadius: 4,
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        paddingVertical: 12,
+        paddingHorizontal: 16,
+        elevation: 6,
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 3 },
+        shadowOpacity: 0.25,
+        shadowRadius: 3.84,
+        zIndex: 1000,
+    },
+    undoSnackbarText: {
+        fontSize: 14,
+    },
+    undoButton: {
+        fontSize: 14,
+        fontWeight: 'bold',
+        paddingVertical: 4,
+        paddingHorizontal: 8,
+    }
 });

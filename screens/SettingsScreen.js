@@ -46,12 +46,15 @@ export default function SettingsScreen() {
         db,
         loadAssets,
         loadTransactions,
-        loadBudgets
+        loadBudgets,
+        getTransactionHistory
     } = useContext(DatabaseContext);
 
     const [showCurrencyModal, setShowCurrencyModal] = useState(false);
     const [isExporting, setIsExporting] = useState(false);
     const [isImporting, setIsImporting] = useState(false);
+    const [transactionHistory, setTransactionHistory] = useState([]);
+    const [showHistoryModal, setShowHistoryModal] = useState(false);
 
     // Export app data to a JSON file
     const exportData = async () => {
@@ -265,6 +268,13 @@ export default function SettingsScreen() {
         );
     };
 
+    // Load transaction history when modal opens
+    const openHistoryModal = async () => {
+        const history = await getTransactionHistory();
+        setTransactionHistory(history);
+        setShowHistoryModal(true);
+    };
+
     return (
         <SafeAreaView style={[styles.container, { backgroundColor: theme.background }]}>
             <ScrollView style={styles.scrollView}>
@@ -355,6 +365,20 @@ export default function SettingsScreen() {
                     <Ionicons name="chevron-forward" size={20} color={theme.textSecondary} />
                 </TouchableOpacity>
 
+                {/* Transaction History section */}
+                <Text style={[styles.sectionTitle, { color: theme.text, marginTop: 30 }]}>Transaction History</Text>
+
+                <TouchableOpacity
+                    style={[styles.settingItem, { borderBottomColor: theme.border }]}
+                    onPress={openHistoryModal}
+                >
+                    <View style={styles.settingLeft}>
+                        <Ionicons name="time-outline" size={24} color={theme.primary} style={styles.settingIcon} />
+                        <Text style={[styles.settingText, { color: theme.text }]}>View Transaction History</Text>
+                    </View>
+                    <Ionicons name="chevron-forward" size={20} color={theme.textSecondary} />
+                </TouchableOpacity>
+
                 {/* About Section */}
                 <View style={styles.aboutSection}>
                     <Text style={[styles.aboutText, { color: theme.textSecondary }]}>
@@ -419,6 +443,65 @@ export default function SettingsScreen() {
                         />
                     </View>
                 </View>
+            </Modal>
+
+            {/* Transaction History Modal */}
+            <Modal
+                visible={showHistoryModal}
+                animationType="slide"
+                transparent={false}
+                onRequestClose={() => setShowHistoryModal(false)}
+            >
+                <SafeAreaView style={[styles.container, { backgroundColor: theme.background }]}>
+                    <View style={styles.modalHeader}>
+                        <Text style={[styles.modalTitle, { color: theme.text }]}>Transaction History</Text>
+                        <TouchableOpacity onPress={() => setShowHistoryModal(false)}>
+                            <Ionicons name="close" size={24} color={theme.text} />
+                        </TouchableOpacity>
+                    </View>
+
+                    {transactionHistory.length === 0 ? (
+                        <View style={styles.emptyContainer}>
+                            <Text style={[styles.emptyText, { color: theme.textSecondary }]}>
+                                No transaction history available
+                            </Text>
+                        </View>
+                    ) : (
+                        <FlatList
+                            data={transactionHistory}
+                            keyExtractor={(item) => item.id.toString()}
+                            renderItem={({ item }) => (
+                                <View style={[styles.historyItem, { borderBottomColor: theme.border }]}>
+                                    <View style={styles.historyHeader}>
+                                        <Text style={[styles.historyAction, { color: theme.primary }]}>
+                                            {item.action === 'delete' ? 'Deleted' : 'Restored'}
+                                        </Text>
+                                        <Text style={[styles.historyDate, { color: theme.textSecondary }]}>
+                                            {new Date(item.timestamp).toLocaleString()}
+                                        </Text>
+                                    </View>
+                                    <View style={styles.historyDetails}>
+                                        <Text style={[styles.historyText, { color: theme.text }]}>
+                                            {item.data.type === 'expense' ? 'Expense: ' : 'Income: '}
+                                            {currency} {parseFloat(item.data.amount).toFixed(2)}
+                                        </Text>
+                                        <Text style={[styles.historyText, { color: theme.text }]}>
+                                            Category: {item.data.category}
+                                        </Text>
+                                        {item.data.description && (
+                                            <Text style={[styles.historyText, { color: theme.text }]}>
+                                                Description: {item.data.description}
+                                            </Text>
+                                        )}
+                                        <Text style={[styles.historyText, { color: theme.text }]}>
+                                            Account: {item.data.location}
+                                        </Text>
+                                    </View>
+                                </View>
+                            )}
+                        />
+                    )}
+                </SafeAreaView>
             </Modal>
         </SafeAreaView>
     );
@@ -489,10 +572,13 @@ const styles = StyleSheet.create({
         justifyContent: 'space-between',
         alignItems: 'center',
         marginBottom: 16,
+        padding: 20,
+        paddingBottom: 0,
     },
     modalTitle: {
         fontSize: 18,
         fontWeight: 'bold',
+
     },
     currencyItem: {
         flexDirection: 'row',
@@ -517,5 +603,38 @@ const styles = StyleSheet.create({
     currencyName: {
         fontSize: 14,
         marginTop: 4,
+    },
+    historyItem: {
+        padding: 16,
+        borderBottomWidth: 1,
+    },
+    historyHeader: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        marginBottom: 8,
+    },
+    historyAction: {
+        fontWeight: 'bold',
+        fontSize: 16,
+    },
+    historyDate: {
+        fontSize: 14,
+    },
+    historyDetails: {
+        marginLeft: 8,
+    },
+    historyText: {
+        fontSize: 14,
+        marginBottom: 4,
+    },
+    emptyContainer: {
+        flex: 1,
+        justifyContent: 'center',
+        alignItems: 'center',
+        padding: 20,
+    },
+    emptyText: {
+        fontSize: 16,
+        textAlign: 'center',
     },
 });
