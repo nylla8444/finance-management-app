@@ -16,6 +16,12 @@ export const DatabaseProvider = ({ children }) => {
     const [initRetries, setInitRetries] = useState(0);
     const [deletedTransactions, setDeletedTransactions] = useState([]); // Track deleted transactions
     const [recentlyDeleted, setRecentlyDeleted] = useState([]); // Track recently deleted transactions
+    const [archivedTransactions, setArchivedTransactions] = useState([]);
+    const [archiveSettings, setArchiveSettings] = useState({
+        autoArchive: true,
+        archiveAfterMonths: 12, // Archive transactions older than 12 months
+        keepRecentMonths: 3, // Keep last 3 months always loaded
+    });
     const MAX_RETRIES = 3;
 
     // Safely execute database operations with null checks and error handling
@@ -88,6 +94,19 @@ export const DatabaseProvider = ({ children }) => {
                     'CREATE TABLE IF NOT EXISTS transaction_history (id INTEGER PRIMARY KEY AUTOINCREMENT, transaction_id INTEGER, action TEXT, timestamp TEXT, data TEXT);'
                 );
 
+                // Add archive tables
+                console.log("Creating archive tables...");
+                await database.execAsync(
+                    'CREATE TABLE IF NOT EXISTS archived_transactions (id INTEGER PRIMARY KEY AUTOINCREMENT, original_id INTEGER, type TEXT, amount REAL, category TEXT, description TEXT, location TEXT, date TEXT, archived_date TEXT);'
+                );
+
+                await database.execAsync(
+                    'CREATE TABLE IF NOT EXISTS archive_settings (id INTEGER PRIMARY KEY, auto_archive BOOLEAN, archive_after_months INTEGER, keep_recent_months INTEGER);'
+                );
+
+                // Load archive settings
+                await loadArchiveSettings(database);
+
                 if (!isMounted) return;
 
                 setDbInitialized(true);
@@ -156,8 +175,22 @@ export const DatabaseProvider = ({ children }) => {
                 return;
             }
 
-            const result = await db.getAllAsync('SELECT * FROM transactions ORDER BY date DESC');
+            // Calculate cutoff date based on keepRecentMonths
+            const cutoffDate = new Date();
+            cutoffDate.setMonth(cutoffDate.getMonth() - archiveSettings.keepRecentMonths);
+            const cutoffDateString = cutoffDate.toISOString();
+
+            // Only load transactions newer than cutoff date
+            const result = await db.getAllAsync(
+                'SELECT * FROM transactions WHERE date >= ? ORDER BY date DESC',
+                [cutoffDateString]
+            );
             setTransactions(result);
+
+            // Auto-archive if enabled
+            if (archiveSettings.autoArchive) {
+                await autoArchiveOldTransactions();
+            }
         } catch (error) {
             console.error('Error loading transactions', error);
         }
@@ -177,6 +210,44 @@ export const DatabaseProvider = ({ children }) => {
         } catch (error) {
             console.error('Error loading budgets', error);
         }
+    };
+
+    // Load archive settings
+    const loadArchiveSettings = async (database) => {
+        try {
+            const db = database || this.db;
+            if (!db) return;
+
+            const result = await db.getAllAsync('SELECT * FROM archive_settings WHERE id = 1');
+            if (result.length > 0) {
+                const settings = result[0];
+                setArchiveSettings({
+                    autoArchive: Boolean(settings.auto_archive),
+                    archiveAfterMonths: settings.archive_after_months,
+                    keepRecentMonths: settings.keep_recent_months,
+                });
+            } else {
+                // Insert default settings
+                await db.runAsync(
+                    'INSERT INTO archive_settings (id, auto_archive, archive_after_months, keep_recent_months) VALUES (1, ?, ?, ?)',
+
+                    [1, 12, 3]
+                );
+            }
+        } catch (error) {
+            console.error('Error loading archive settings', error);
+        }
+    };
+
+    // Update archive settings
+    const updateArchiveSettings = async (newSettings) => {
+        return safeDbOperation(async () => {
+            await db.runAsync(
+                'UPDATE archive_settings SET auto_archive = ?, archive_after_months = ?, keep_recent_months = ? WHERE id = 1',
+                [newSettings.autoArchive ? 1 : 0, newSettings.archiveAfterMonths, newSettings.keepRecentMonths]
+            );
+            setArchiveSettings(newSettings);
+        }, 'Error updating archive settings');
     };
 
     // Add a new asset
@@ -711,6 +782,209 @@ export const DatabaseProvider = ({ children }) => {
         return getCurrencySymbol(currency);
     };
 
+    // Auto-archive old transactions
+    const autoArchiveOldTransactions = async () => {
+        return safeDbOperation(async () => {
+            const archiveDate = new Date();
+            archiveDate.setMonth(archiveDate.getMonth() - archiveSettings.archiveAfterMonths);
+            const archiveDateString = archiveDate.toISOString();
+
+            // Get transactions to archive
+            const transactionsToArchive = await db.getAllAsync(
+                'SELECT * FROM transactions WHERE date < ?',
+                [archiveDateString]
+            );
+
+            if (transactionsToArchive.length === 0) return;
+
+            console.log(`Auto-archiving ${transactionsToArchive.length} old transactions`);
+
+            await db.withTransactionAsync(async () => {
+                // Move transactions to archive
+                for (const transaction of transactionsToArchive) {
+                    await db.runAsync(
+                        'INSERT INTO archived_transactions (original_id, type, amount, category, description, location, date, archived_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+                        [
+                            transaction.id,
+                            transaction.type,
+                            transaction.amount,
+                            transaction.category,
+                            transaction.description,
+                            transaction.location,
+                            transaction.date,
+                            new Date().toISOString()
+                        ]
+                    );
+                }
+
+                // Remove from main transactions table
+                await db.runAsync(
+                    'DELETE FROM transactions WHERE date < ?',
+                    [archiveDateString]
+                );
+            });
+
+            // Reload transactions
+            await loadTransactions();
+        }, 'Error auto-archiving transactions');
+    };
+
+    // Manual archive transactions by date range
+    const archiveTransactionsByDateRange = async (startDate, endDate) => {
+        return safeDbOperation(async () => {
+            const transactionsToArchive = await db.getAllAsync(
+                'SELECT * FROM transactions WHERE date >= ? AND date <= ?',
+                [startDate, endDate]
+            );
+
+            if (transactionsToArchive.length === 0) return 0;
+
+            await db.withTransactionAsync(async () => {
+                for (const transaction of transactionsToArchive) {
+                    await db.runAsync(
+                        'INSERT INTO archived_transactions (original_id, type, amount, category, description, location, date, archived_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+                        [
+                            transaction.id,
+                            transaction.type,
+                            transaction.amount,
+                            transaction.category,
+                            transaction.description,
+                            transaction.location,
+                            transaction.date,
+                            new Date().toISOString()
+                        ]
+                    );
+                }
+
+                await db.runAsync(
+                    'DELETE FROM transactions WHERE date >= ? AND date <= ?',
+                    [startDate, endDate]
+                );
+            });
+
+            await loadTransactions();
+            return transactionsToArchive.length;
+        }, 'Error archiving transactions by date range');
+    };
+
+    // Load archived transactions with pagination
+    const loadArchivedTransactions = async (page = 0, limit = 50) => {
+        return safeDbOperation(async () => {
+            const offset = page * limit;
+            const result = await db.getAllAsync(
+                'SELECT * FROM archived_transactions ORDER BY date DESC LIMIT ? OFFSET ?',
+                [limit, offset]
+            );
+
+            if (page === 0) {
+                setArchivedTransactions(result);
+            } else {
+                setArchivedTransactions(prev => [...prev, ...result]);
+            }
+
+            return result;
+        }, 'Error loading archived transactions');
+    };
+
+    // Get archived transactions count
+    const getArchivedTransactionsCount = async () => {
+        return safeDbOperation(async () => {
+            const result = await db.getAllAsync('SELECT COUNT(*) as count FROM archived_transactions');
+            return result[0]?.count || 0;
+        }, 'Error getting archived transactions count');
+    };
+
+    // Restore archived transaction
+    const restoreArchivedTransaction = async (archivedId) => {
+        return safeDbOperation(async () => {
+            const archived = await db.getAllAsync(
+                'SELECT * FROM archived_transactions WHERE id = ?',
+                [archivedId]
+            );
+
+            if (archived.length === 0) return false;
+
+            const transaction = archived[0];
+
+            await db.withTransactionAsync(async () => {
+                // Add back to main transactions
+                await db.runAsync(
+                    'INSERT INTO transactions (type, amount, category, description, location, date) VALUES (?, ?, ?, ?, ?, ?)',
+                    [
+                        transaction.type,
+                        transaction.amount,
+                        transaction.category,
+                        transaction.description,
+                        transaction.location,
+                        transaction.date
+                    ]
+                );
+
+                // Remove from archive
+                await db.runAsync('DELETE FROM archived_transactions WHERE id = ?', [archivedId]);
+            });
+
+            await loadTransactions();
+            await loadArchivedTransactions();
+            return true;
+        }, 'Error restoring archived transaction');
+    };
+
+    // Delete archived transaction permanently
+    const deleteArchivedTransaction = async (archivedId) => {
+        return safeDbOperation(async () => {
+            await db.runAsync('DELETE FROM archived_transactions WHERE id = ?', [archivedId]);
+            await loadArchivedTransactions();
+            return true;
+        }, 'Error deleting archived transaction');
+    };
+
+    // Get archive statistics
+    const getArchiveStatistics = async () => {
+        return safeDbOperation(async () => {
+            const stats = await db.getAllAsync(`
+                SELECT 
+                    COUNT(*) as total_archived,
+                    MIN(date) as oldest_date,
+                    MAX(date) as newest_date,
+                    SUM(CASE WHEN type = 'income' THEN amount ELSE 0 END) as total_income,
+                    SUM(CASE WHEN type = 'expense' THEN amount ELSE 0 END) as total_expenses
+                FROM archived_transactions
+            `);
+
+            return stats[0] || {
+                total_archived: 0,
+                oldest_date: null,
+                newest_date: null,
+                total_income: 0,
+                total_expenses: 0
+            };
+        }, 'Error getting archive statistics');
+    };
+
+    // Search transactions (both active and archived)
+    const searchAllTransactions = async (searchTerm, includeArchived = false) => {
+        return safeDbOperation(async () => {
+            const searchPattern = `%${searchTerm}%`;
+
+            // Search active transactions
+            const activeResults = await db.getAllAsync(
+                'SELECT *, "active" as source FROM transactions WHERE category LIKE ? OR description LIKE ? OR location LIKE ? ORDER BY date DESC',
+                [searchPattern, searchPattern, searchPattern]
+            );
+
+            if (!includeArchived) return activeResults;
+
+            // Search archived transactions
+            const archivedResults = await db.getAllAsync(
+                'SELECT *, "archived" as source FROM archived_transactions WHERE category LIKE ? OR description LIKE ? OR location LIKE ? ORDER BY date DESC',
+                [searchPattern, searchPattern, searchPattern]
+            );
+
+            return [...activeResults, ...archivedResults];
+        }, 'Error searching transactions');
+    };
+
     return (
         <DatabaseContext.Provider
             value={{
@@ -745,6 +1019,17 @@ export const DatabaseProvider = ({ children }) => {
                 undoDeleteTransaction,
                 recentlyDeleted,
                 getTransactionHistory,
+                archivedTransactions,
+                archiveSettings,
+                updateArchiveSettings,
+                autoArchiveOldTransactions,
+                archiveTransactionsByDateRange,
+                loadArchivedTransactions,
+                getArchivedTransactionsCount,
+                restoreArchivedTransaction,
+                deleteArchivedTransaction,
+                getArchiveStatistics,
+                searchAllTransactions,
             }}
         >
             {children}

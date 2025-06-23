@@ -15,6 +15,10 @@ import { PreferencesContext } from '../context/PreferencesContext';
 import TransactionSummary from '../components/TransactionSummary';
 import TransactionItem from '../components/TransactionItem';
 import TransactionForm from '../components/TransactionForm';
+import ArchiveManager from '../components/ArchiveManager';
+import * as FileSystem from 'expo-file-system';
+import * as Sharing from 'expo-sharing';
+import * as MediaLibrary from 'expo-media-library';
 
 // Periods for grouping transactions
 const PERIODS = ['Week', 'Month', 'Year'];
@@ -37,6 +41,7 @@ export default function TransactionsScreen() {
     const [showAddModal, setShowAddModal] = useState(false);
     const [showPeriodModal, setShowPeriodModal] = useState(false);
     const [editingTransaction, setEditingTransaction] = useState(null);
+    const [showArchiveManager, setShowArchiveManager] = useState(false);
 
     // Add state for undo snackbar
     const [showUndoSnackbar, setShowUndoSnackbar] = useState(false);
@@ -198,6 +203,109 @@ export default function TransactionsScreen() {
         })).sort((a, b) => new Date(b.date) - new Date(a.date));
     };
 
+    // Add export transactions functionality
+    const exportTransactions = async () => {
+        try {
+            const exportData = {
+                transactions: getFilteredTransactions(),
+                summary: {
+                    period,
+                    filter,
+                    totalIncome: incomeTotal,
+                    totalExpenses: expenseTotal,
+                    transactionCount: getFilteredTransactions().length
+                },
+                exportDate: new Date().toISOString(),
+                currency
+            };
+
+            const jsonData = JSON.stringify(exportData, null, 2);
+            const fileName = `transactions_export_${period.toLowerCase()}_${new Date().toISOString().split('T')[0]}.json`;
+            const filePath = `${FileSystem.documentDirectory}${fileName}`;
+
+            await FileSystem.writeAsStringAsync(filePath, jsonData, {
+                encoding: FileSystem.EncodingType.UTF8,
+            });
+
+            // Check media library permission
+            const { status } = await MediaLibrary.requestPermissionsAsync();
+
+            if (status === 'granted') {
+                // Try to save to Downloads
+                try {
+                    const asset = await MediaLibrary.createAssetAsync(filePath);
+                    const album = await MediaLibrary.getAlbumAsync('Download');
+
+                    if (album == null) {
+                        await MediaLibrary.createAlbumAsync('Download', asset, false);
+                    } else {
+                        await MediaLibrary.addAssetsToAlbumAsync([asset], album, false);
+                    }
+
+                    // Also share the file
+                    if (await Sharing.isAvailableAsync()) {
+                        Alert.alert(
+                            "Export Complete",
+                            `File saved to Downloads and ready to share!\n\nFile: ${fileName}\nTransactions: ${getFilteredTransactions().length}`,
+                            [
+                                { text: "Done", style: "default" },
+                                {
+                                    text: "Share",
+                                    onPress: () => Sharing.shareAsync(filePath, {
+                                        mimeType: 'application/json',
+                                        dialogTitle: 'Export Transactions'
+                                    })
+                                }
+                            ]
+                        );
+                    } else {
+                        Alert.alert(
+                            "Export Complete",
+                            `File saved to Downloads!\n\nFile: ${fileName}\nTransactions: ${getFilteredTransactions().length}`,
+                            [{ text: "OK" }]
+                        );
+                    }
+                } catch (mediaError) {
+                    console.warn('Media library error:', mediaError);
+                    // Fall back to sharing only
+                    if (await Sharing.isAvailableAsync()) {
+                        await Sharing.shareAsync(filePath, {
+                            mimeType: 'application/json',
+                            dialogTitle: 'Export Transactions'
+                        });
+                    }
+                }
+            } else {
+                // Permission denied or in Expo Go - share only
+                if (await Sharing.isAvailableAsync()) {
+                    Alert.alert(
+                        "Export Ready",
+                        `File created and ready to share!\n\nFile: ${fileName}\nTransactions: ${getFilteredTransactions().length}\n\nNote: In Expo Go, files can only be shared, not saved directly to Downloads.`,
+                        [
+                            { text: "Cancel", style: "cancel" },
+                            {
+                                text: "Share",
+                                onPress: () => Sharing.shareAsync(filePath, {
+                                    mimeType: 'application/json',
+                                    dialogTitle: 'Export Transactions'
+                                })
+                            }
+                        ]
+                    );
+                } else {
+                    Alert.alert(
+                        "Export Created",
+                        `File created in app storage!\n\nFile: ${fileName}\nLocation: App Documents\nTransactions: ${getFilteredTransactions().length}`,
+                        [{ text: "OK" }]
+                    );
+                }
+            }
+        } catch (error) {
+            console.error('Export error:', error);
+            Alert.alert("Export Failed", "Could not export transactions. Please try again.");
+        }
+    };
+
     const renderHeader = () => (
         <>
             <TransactionSummary
@@ -209,6 +317,24 @@ export default function TransactionsScreen() {
             />
 
             <View style={styles.filterContainer}>
+                {/* Add Export button */}
+                <TouchableOpacity
+                    style={[styles.exportButton, { backgroundColor: theme.success || '#4CAF50' }]}
+                    onPress={exportTransactions}
+                >
+                    <Ionicons name="download-outline" size={16} color="white" />
+                    <Text style={styles.exportButtonText}>Export</Text>
+                </TouchableOpacity>
+
+                {/* Add Archive button */}
+                <TouchableOpacity
+                    style={[styles.archiveButton, { backgroundColor: theme.textSecondary }]}
+                    onPress={() => setShowArchiveManager(true)}
+                >
+                    <Ionicons name="archive-outline" size={16} color="white" />
+                    <Text style={styles.archiveButtonText}>Archive</Text>
+                </TouchableOpacity>
+
                 <TouchableOpacity
                     style={[
                         styles.filterButton,
@@ -363,6 +489,12 @@ export default function TransactionsScreen() {
                 </TouchableOpacity>
             </Modal>
 
+            {/* Archive Manager Modal */}
+            <ArchiveManager
+                visible={showArchiveManager}
+                onClose={() => setShowArchiveManager(false)}
+            />
+
             {/* Undo Snackbar */}
             {showUndoSnackbar && (
                 <View style={[styles.undoSnackbar, { backgroundColor: theme.card }]}>
@@ -507,5 +639,33 @@ const styles = StyleSheet.create({
         fontWeight: 'bold',
         paddingVertical: 4,
         paddingHorizontal: 8,
-    }
+    },
+    exportButton: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingHorizontal: 12,
+        paddingVertical: 6,
+        borderRadius: 16,
+        marginRight: 8,
+    },
+    exportButtonText: {
+        color: 'white',
+        fontSize: 12,
+        fontWeight: '500',
+        marginLeft: 4,
+    },
+    archiveButton: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingHorizontal: 12,
+        paddingVertical: 6,
+        borderRadius: 16,
+        marginRight: 8,
+    },
+    archiveButtonText: {
+        color: 'white',
+        fontSize: 12,
+        fontWeight: '500',
+        marginLeft: 4,
+    },
 });

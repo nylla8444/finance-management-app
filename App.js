@@ -1,3 +1,5 @@
+import 'expo-dev-client';
+
 import React, { useContext } from 'react';
 import { NavigationContainer, DefaultTheme, DarkTheme } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
